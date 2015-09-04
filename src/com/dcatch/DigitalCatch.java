@@ -8,6 +8,7 @@ import java.util.TimerTask;
 import com.appiaries.baas.sdk.*;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.content.res.AssetManager;
@@ -51,11 +52,16 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 	private int between;
 	private SoundPool mSp;
 	private int mIdThrow = -1;
-	private int mIdCatc = -1;
+	private int mIdCatc = -1;	
+	
+	private double last_throw_unix_time = 0;
+	
+	private Activity parent = null;
 	
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+		parent = this;
 
 		Context context = getApplicationContext();
 		AB.Config.setDatastoreID("_sandbox"); // アピアリーズのデータストアID
@@ -68,7 +74,7 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 		setContentView(linearLayout);
 
 		tv_top = new TextView(this);
-		tv_top.setText("番号と距離を入力して投げてみよう");
+		tv_top.setText("番号を入力&距離(メートル)選択して投げてみよう");
 		linearLayout.addView(tv_top, new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
 
 		TextView tv = new TextView(this);
@@ -88,6 +94,8 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
         adapter.add("3");
         adapter.add("5");
         adapter.add("10");
+        adapter.add("30");
+        adapter.add("100");
  
         Spinner spinner = new Spinner(this);
         // アダプターを設定します
@@ -151,7 +159,7 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 	@Override
 	protected void onResume() {
 		super.onResume();
-		List<Sensor> sensors = manager.getSensorList(Sensor.TYPE_ACCELEROMETER);
+		List<Sensor> sensors = manager.getSensorList(Sensor.TYPE_LINEAR_ACCELERATION);
 		if(sensors.size() > 0) {
 			Sensor s = sensors.get(0);
 			manager.registerListener(this, s, SensorManager.SENSOR_DELAY_UI);
@@ -167,26 +175,35 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 	
 	@Override
 	public void onSensorChanged(SensorEvent event) {
-		if(event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-			if(event.values[SensorManager.DATA_Z] > 14.0){
+		if(event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+//			tv_top.setText("x:" + String.valueOf(event.values[0]) + 
+//							"\ny:" + String.valueOf(event.values[1]) + 
+//								"\nz:" + String.valueOf(event.values[2]));							
+			
+			double z_acc = event.values[2];						
+			if(z_acc > 7 && ((System.currentTimeMillis() / 1000.0) - last_throw_unix_time) > 1){
 				over_threth = true;
-				if (event.values[SensorManager.DATA_Z] > max_acc) {
-					max_acc = event.values[SensorManager.DATA_Z];
+				if (z_acc > max_acc) {
+					max_acc = z_acc;
 				}
 			}
 				
-			if(over_threth && event.values[SensorManager.DATA_Z] <  12){
-				double sec = between / (max_acc * (1.3/max_acc));
+			if(over_threth && z_acc <  0.5){
+				double sec = between / (max_acc * 1.5);
 				side = SEND;
-				tv_top.setText(String.valueOf(sec));
+//				side = RECV;				
+				tv_top.setText(String.valueOf(sec).substring(0, 5) + "秒 " + String.valueOf((3.6 * max_acc * 0.8)).substring(0,5) + "km/h");
 				
 				over_threth = false;
-				max_acc = 0;
-				 
+				max_acc = 0;			
+				
+				
+				double time = (System.currentTimeMillis() / 1000.0) + sec;
+				last_throw_unix_time = time;
 				SpannableStringBuilder sb = (SpannableStringBuilder) edit.getText();
 				ABDBObject obj = new ABDBObject("test"); // オブジェクトを作成するJSONデータ・コレクションのID
 				obj.put("id", sb.toString());
-				obj.put("sec", String.valueOf(sec));
+				obj.put("sec", String.valueOf(time));
 
 				mSp.play(mIdThrow, 1, 1, 0, 0, 1);
 
@@ -204,7 +221,7 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 				}
 
 				mSp.play(mIdCatc, 1, 1, 0, 0, 1);
-				removeDB(sb.toString());
+//				removeDB(sb.toString());
 			}
 		}
 	}	
@@ -221,8 +238,16 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 			counter++;
 			
 			double sec;
-			if ((sec = checkDB(id_str)) > 0 && side == RECV) {
+			if ((sec = checkDB(id_str)) != 99999 && side == RECV) {
 				removeDB(id_str);
+//				AlertDialog.Builder alert = new AlertDialog.Builder(parent);
+//		        alert.setTitle("title")
+//		        .setMessage(String.valueOf(sec))
+//		        .setPositiveButton("OK", null)
+//		        .show();				
+				if(sec < 0) {
+					sec = 0;
+				}
 				try {
 					Thread.sleep((long)(sec * 1000));
 				} catch (InterruptedException e1) {
@@ -233,7 +258,7 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 				counter = 0;
 			}
 			
-			if(counter > 300){
+			if(counter > 600){
 				side = NONE;
 				counter = 0;
 			}
@@ -256,14 +281,17 @@ public class DigitalCatch extends Activity implements View.OnClickListener, Sens
 			ABResult<List<ABDBObject>> result = AB.DBService.findSynchronouslyWithQuery(query);
 			foundArray = result.getData();
 		} catch (ABException e) {
-			return 0;
+			return 99999;
 		}
 
 		if (foundArray.size() > 0) {
-			System.out.println(foundArray);
-			return Double.parseDouble((String)((ABDBObject) foundArray.get(0)).get("sec"));
+//			System.out.println(foundArray);
+			double time = Double.parseDouble((String)((ABDBObject) foundArray.get(foundArray.size() - 1)).get("sec"));
+			double ret = time - (double)(System.currentTimeMillis() / 1000.0);
+			System.out.println("sec: " + String.valueOf(ret));
+			return ret;
 		} else {
-			return 0;
+			return 99999;
 		}
 	}	
 }
